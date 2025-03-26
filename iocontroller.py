@@ -9,13 +9,34 @@ import time
 import keyboard  # Add at top of file
 import sys
 import os
+from PIL import Image  # Add this import at the top if not present
+from config_manager import ConfigManager
 
 class Application:
     def __init__(self, master):
         self.master = master
-        self.master.title("Barcode Scanner Interface")
+        self.master.title("Barcode Scanner")
         self.master.geometry('600x500+100+100')
         self.master.protocol('WM_DELETE_WINDOW', self.on_closing)
+        
+        # Set window icon
+        try:
+            if getattr(sys, 'frozen', False):
+                # Running as compiled exe
+                application_path = sys._MEIPASS
+            else:
+                # Running as script
+                application_path = os.path.dirname(os.path.abspath(__file__))
+                
+            icon_path = os.path.join(application_path, "app.ico")
+            if os.path.exists(icon_path):
+                self.master.iconbitmap(icon_path)
+                # Store icon path for tray icon
+                self.icon_path = icon_path
+            else:
+                self.icon_path = None
+        except Exception:
+            self.icon_path = None
         
         # Create main frames
         self.control_frame = ttk.Frame(self.master)
@@ -40,6 +61,10 @@ class Application:
         self.available_ports = []
         self.scan_com_ports()
         self.last_barcode = ''
+        
+        self.config_manager = ConfigManager()
+        self.config = self.config_manager.load_config()
+        self.input_serials = [None, None]  # Two input serial connections
 
         # Setup UI Components
         self.setup_ui()
@@ -49,9 +74,16 @@ class Application:
         self.icon_thread = None
 
     def setup_ui(self):
-        # Main frame
-        main_frame = tk.Frame(self.master)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Create main container with background color
+        self.container_frame = tk.Frame(self.master)
+        self.container_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Title bar at top (already exists in __init__)
+        # self.master.title("Barcode Scanner")
+
+        # Main content frame
+        main_frame = tk.Frame(self.container_frame)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10,0))
 
         # Buttons frame
         button_frame = tk.Frame(main_frame)
@@ -81,81 +113,82 @@ class Application:
         com_ports_frame = tk.LabelFrame(main_frame, text="COM Port Configuration")
         com_ports_frame.pack(fill=tk.X, pady=10, padx=5)
         
-        # Ports selection frame (contains both input and output in same row)
-        ports_frame = tk.Frame(com_ports_frame)
-        ports_frame.pack(fill=tk.X, pady=5, padx=5)
+        # Left side: COM Port Selection
+        ports_frame = tk.LabelFrame(com_ports_frame, text="Port Selection")
+        ports_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Input COM port selection (left side)
-        input_frame = tk.Frame(ports_frame)
-        input_frame.pack(side=tk.LEFT, expand=True)
-        # tk.Label(input_frame, text="Input (Barcode Scanner):").pack(side=tk.LEFT)
+        # Input Port 1
+        input1_frame = tk.Frame(ports_frame)
+        input1_frame.pack(fill=tk.X, pady=2)
+        tk.Label(input1_frame, text="Input 1:").pack(side=tk.LEFT)
+        self.input1_com_var = tk.StringVar(value=self.config['input_port1'])
+        self.input1_com_dropdown = ttk.Combobox(input1_frame, textvariable=self.input1_com_var, 
+                                              values=com_ports, width=30)
+        self.input1_com_dropdown.pack(side=tk.LEFT, padx=5)
         
-        tk.Label(input_frame, text="Input:").pack(side=tk.LEFT)
-        self.input_com_var = tk.StringVar()
-        self.input_com_var.set(com_ports[0] if com_ports else "No COM Ports Found")
-        self.input_com_dropdown = ttk.Combobox(input_frame, textvariable=self.input_com_var, values=com_ports, width=15)
-        self.input_com_dropdown.pack(side=tk.LEFT, padx=5)
+        # Input Port 2
+        input2_frame = tk.Frame(ports_frame)
+        input2_frame.pack(fill=tk.X, pady=2)
+        tk.Label(input2_frame, text="Input 2:").pack(side=tk.LEFT)
+        self.input2_com_var = tk.StringVar(value=self.config['input_port2'])
+        self.input2_com_dropdown = ttk.Combobox(input2_frame, textvariable=self.input2_com_var, 
+                                              values=com_ports, width=30)
+        self.input2_com_dropdown.pack(side=tk.LEFT, padx=5)
         
-        # Output COM port selection (right side)
+        # Output Port
         output_frame = tk.Frame(ports_frame)
-        output_frame.pack(side=tk.LEFT, expand=True)
-        # tk.Label(output_frame, text="Output (I/O Controller):").pack(side=tk.LEFT)
-        tk.Label(output_frame, text="Output:").pack(side=tk.LEFT)
-        self.output_com_var = tk.StringVar()
-        self.output_com_var.set(com_ports[1] if len(com_ports) > 1 else com_ports[0] if com_ports else "No COM Ports Found")
-        self.output_com_dropdown = ttk.Combobox(output_frame, textvariable=self.output_com_var, values=com_ports, width=15)
+        output_frame.pack(fill=tk.X, pady=2)
+        tk.Label(output_frame, text="Output: ").pack(side=tk.LEFT)
+        self.output_com_var = tk.StringVar(value=self.config['output_port'])
+        self.output_com_dropdown = ttk.Combobox(output_frame, textvariable=self.output_com_var, 
+                                              values=com_ports, width=30)
         self.output_com_dropdown.pack(side=tk.LEFT, padx=5)
-        
-        # Configuration frame (contains both configs and refresh button in same row)
-        config_frame = tk.Frame(com_ports_frame)
-        config_frame.pack(fill=tk.X, pady=5, padx=5)
-        
-        # Input serial configuration (left)
-        input_config_frame = tk.LabelFrame(config_frame, text="Input Port Configuration")
-        input_config_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0,5))
-        
-        tk.Label(input_config_frame, text="Baud Rate:").grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
-        self.input_baud_var = tk.StringVar(value="9600")
-        input_baud_combo = ttk.Combobox(input_config_frame, textvariable=self.input_baud_var, 
-                                       values=["9600", "19200", "38400", "57600", "115200"], width=5)
-        input_baud_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=2)
-        
-        # Output serial configuration (middle)
-        output_config_frame = tk.LabelFrame(config_frame, text="Output Port Configuration")
-        output_config_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        
-        tk.Label(output_config_frame, text="Baud Rate:").grid(row=0, column=0, sticky=tk.W, padx=4, pady=2)
-        self.output_baud_var = tk.StringVar(value="9600")
-        output_baud_combo = ttk.Combobox(output_config_frame, textvariable=self.output_baud_var, 
-                                        values=["9600", "19200", "38400", "57600", "115200"], width=5)
-        output_baud_combo.grid(row=0, column=1, sticky=tk.W, padx=4, pady=2)
 
-        # Add switch number selection
-        tk.Label(output_config_frame, text="Switch:").grid(row=1, column=0, sticky=tk.W, padx=4, pady=2)
-        switch_combobox = ttk.Combobox(output_config_frame, textvariable=self.switch_number, 
-                                      values=list(range(1, 3)), width=3)
-        switch_combobox.grid(row=1, column=1, sticky=tk.W, padx=4, pady=2)
-        switch_combobox.current(0)  # set default value to 1
-
-        # Add validation for switch input
-        vcmd2 = (self.master.register(self.validate_switch_input), '%P')
-        switch_combobox.configure(validate='key', validatecommand=vcmd2)
+        # Right side: Port Configurations
+        config_frame = tk.LabelFrame(com_ports_frame, text="Port Configuration")
+        config_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Refresh button frame (right)
-        refresh_frame = tk.Frame(config_frame)
-        refresh_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        refresh_btn = tk.Button(
-            refresh_frame, 
-            text="Refresh COM Ports", 
-            command=self.refresh_com_ports
-        )
-        refresh_btn.pack(side=tk.LEFT, padx=5, pady=10)  # Added pady to center vertically
+        # Input 1 configuration
+        input1_config_frame = tk.Frame(config_frame)
+        input1_config_frame.pack(fill=tk.X, pady=2)
+        tk.Label(input1_config_frame, text="Input 1 Baud:").pack(side=tk.LEFT)
+        self.input1_baud_var = tk.StringVar(value=self.config['input_baud1'])
+        ttk.Combobox(input1_config_frame, textvariable=self.input1_baud_var, 
+                     values=["9600", "19200", "38400", "57600", "115200"], width=7).pack(side=tk.LEFT, padx=5)
+        
+        # Input 2 configuration
+        input2_config_frame = tk.Frame(config_frame)
+        input2_config_frame.pack(fill=tk.X, pady=2)
+        tk.Label(input2_config_frame, text="Input 2 Baud:").pack(side=tk.LEFT)
+        self.input2_baud_var = tk.StringVar(value=self.config['input_baud2'])
+        ttk.Combobox(input2_config_frame, textvariable=self.input2_baud_var, 
+                     values=["9600", "19200", "38400", "57600", "115200"], width=7).pack(side=tk.LEFT, padx=5)
+        
+        # Output configuration
+        output_config_frame = tk.Frame(config_frame)
+        output_config_frame.pack(fill=tk.X, pady=2)
+        tk.Label(output_config_frame, text="Output Baud:").pack(side=tk.LEFT)
+        self.output_baud_var = tk.StringVar(value=self.config['output_baud'])
+        ttk.Combobox(output_config_frame, textvariable=self.output_baud_var, 
+                     values=["9600", "19200", "38400", "57600", "115200"], width=7).pack(side=tk.LEFT, padx=5)
+        
+        # Switch selection
+        switch_frame = tk.Frame(config_frame)
+        switch_frame.pack(fill=tk.X, pady=2)
+        tk.Label(switch_frame, text="Switch:").pack(side=tk.LEFT)
+        self.switch_number = tk.StringVar(value=self.config['switch_number'])
+        ttk.Combobox(switch_frame, textvariable=self.switch_number, 
+                     values=["1", "2"], width=7).pack(side=tk.LEFT, padx=5)
+        
+        # Refresh button at the bottom
+        refresh_btn = tk.Button(com_ports_frame, text="Refresh Ports", command=self.refresh_com_ports)
+        refresh_btn.pack(pady=5)
         
         # Create horizontal layout frame
         horizontal_frame = tk.Frame(main_frame)
         horizontal_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
-        # Input column frame (left side)
+        # Left side: Input barcodes
         input_frame = tk.LabelFrame(horizontal_frame, text="Input Barcodes")
         input_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
@@ -189,7 +222,7 @@ class Application:
         )
         self.clear_btn.pack(side=tk.RIGHT, padx=2)
         
-        # Input text box with multiline support
+        # Input text box
         self.input_text = tk.Text(input_frame, width=30, height=10, wrap=tk.WORD)
         self.input_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
@@ -202,18 +235,85 @@ class Application:
         # Bind validation to input text
         self.input_text.bind('<KeyRelease>', self.validate_input_text)
         
-        # Results frame (right side)
-        results_frame = tk.LabelFrame(horizontal_frame, text="Communication Log")
-        results_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Right side: Master barcode list
+        master_frame = tk.LabelFrame(horizontal_frame, text="Master Barcodes")
+        master_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        self.results_text = tk.Text(results_frame, height=20)
+        # Add buttons frame above master text box
+        master_buttons_frame = tk.Frame(master_frame)
+        master_buttons_frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        # Add move up/down/clear buttons for master list
+        self.master_up_btn = tk.Button(
+            master_buttons_frame,
+            text="▲",
+            command=self.move_master_up,
+            width=2
+        )
+        self.master_up_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.master_down_btn = tk.Button(
+            master_buttons_frame,
+            text="▼",
+            command=self.move_master_down,
+            width=2
+        )
+        self.master_down_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.master_clear_btn = tk.Button(
+            master_buttons_frame,
+            text="Clear All",
+            command=self.clear_master,
+            bg="red",
+            fg="white"
+        )
+        self.master_clear_btn.pack(side=tk.RIGHT, padx=2)
+        
+        self.master_text = tk.Text(master_frame, height=20, bg='lightgray')
+        self.master_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Add scrollbar for master list
+        master_scrollbar = tk.Scrollbar(master_frame)
+        master_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.master_text.config(yscrollcommand=master_scrollbar.set)
+        master_scrollbar.config(command=self.master_text.yview)
+        
+        # Configure tags for coloring
+        self.master_text.tag_configure('matched', background='light green')
+        self.master_text.tag_configure('unmatched', background='lightgray')
+        
+        # Scanned barcodes frame (right side)
+        scanned_frame = tk.LabelFrame(horizontal_frame, text="Scanned Barcodes")
+        scanned_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        self.scanned_text = tk.Text(scanned_frame, height=20)
+        self.scanned_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Add scrollbar for scanned barcodes
+        scanned_scrollbar = tk.Scrollbar(self.scanned_text)
+        scanned_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scanned_text.config(yscrollcommand=scanned_scrollbar.set)
+        scanned_scrollbar.config(command=self.scanned_text.yview)
+        
+        # Add show/hide log button
+        self.log_visible = False
+        self.toggle_log_btn = tk.Button(
+            main_frame,
+            text="Show Log",
+            command=self.toggle_log_visibility
+        )
+        self.toggle_log_btn.pack(fill=tk.X, pady=5)
+        
+        # Communication log frame (hidden by default)
+        self.log_frame = tk.LabelFrame(main_frame, text="Communication Log")
+        self.results_text = tk.Text(self.log_frame, height=10)
         self.results_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Add scrollbar for results
-        scrollbar = tk.Scrollbar(self.results_text)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.results_text.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.results_text.yview)
+        # Add scrollbar for log
+        log_scrollbar = tk.Scrollbar(self.results_text)
+        log_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.results_text.config(yscrollcommand=log_scrollbar.set)
+        log_scrollbar.config(command=self.results_text.yview)
 
         # Prepare full-screen overlay
         self.master_screen = tk.Toplevel(self.master)
@@ -222,7 +322,30 @@ class Application:
         
         self.picture_frame = tk.Frame(self.master_screen, background="maroon3")
         self.picture_frame.pack(fill=tk.BOTH, expand=True)
-    
+        
+        # Remove both old footer implementations and replace with this:
+        # Create footer frame that sticks to bottom
+        self.footer_frame = tk.Frame(self.master, bg='lightgray', height=25)
+        self.footer_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.footer_frame.pack_propagate(False)
+
+        # Add separator above footer
+        separator = ttk.Separator(self.master, orient='horizontal')
+        separator.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Copyright text
+        copyright_label = tk.Label(
+            self.footer_frame,
+            text="© 2024 IT & System Innovation P",
+            font=("Arial", 8),
+            bg='lightgray',
+            fg='black'
+        )
+        copyright_label.pack(side=tk.RIGHT, padx=10, pady=5)
+
+        # Make sure footer stays on top of other widgets
+        self.footer_frame.lift()
+
     def detect_com_ports(self):
         """Detect all available COM ports (both physical and virtual)"""
         ports = serial.tools.list_ports.comports()
@@ -239,17 +362,21 @@ class Application:
         """Refresh the list of available COM ports"""
         com_ports = self.detect_com_ports()
         
-        # Update dropdown values
-        self.input_com_dropdown['values'] = com_ports
+        # Update all dropdown values
+        self.input1_com_dropdown['values'] = com_ports
+        self.input2_com_dropdown['values'] = com_ports
         self.output_com_dropdown['values'] = com_ports
         
         if com_ports:
-            if self.input_com_var.get() == "No COM Ports Found":
-                self.input_com_var.set(com_ports[0])
+            if self.input1_com_var.get() == "No COM Ports Found":
+                self.input1_com_var.set(com_ports[0])
+            if self.input2_com_var.get() == "No COM Ports Found":
+                self.input2_com_var.set(com_ports[0])
             if self.output_com_var.get() == "No COM Ports Found":
                 self.output_com_var.set(com_ports[0])
         else:
-            self.input_com_var.set("No COM Ports Found")
+            self.input1_com_var.set("No COM Ports Found")
+            self.input2_com_var.set("No COM Ports Found")
             self.output_com_var.set("No COM Ports Found")
             
         self.update_results("COM ports refreshed.\n")
@@ -274,16 +401,38 @@ class Application:
     
     def minimize_to_tray(self):
         """Minimize window to system tray"""
-        self.master.withdraw()
+        self.master.withdraw()  # Hide the main window
         if not self.icon:
-            image = Image.new('RGB', (64, 64), color='red')
-            menu = pystray.Menu(
-                pystray.MenuItem("Show", self.show_window),
-                pystray.MenuItem("Exit", lambda: self.master.after(0, self.on_closing))
-            )
-            self.icon = pystray.Icon("name", image, "Barcode Scanner", menu)
-            self.icon_thread = threading.Thread(target=self.run_icon, daemon=True)
-            self.icon_thread.start()
+            try:
+                # Create image for tray icon
+                if self.icon_path and os.path.exists(self.icon_path):
+                    image = Image.open(self.icon_path)
+                else:
+                    # Fallback to a colored square if no icon file
+                    image = Image.new('RGB', (64, 64), color='red')
+                    
+                # Create menu for tray icon
+                menu = (
+                    pystray.MenuItem("Show", self.show_window),
+                    pystray.MenuItem("Exit", self.quit_window)
+                )
+                
+                # Create the tray icon
+                self.icon = pystray.Icon(
+                    name="BarcodeScanner",
+                    icon=image,
+                    title="Barcode Scanner",
+                    menu=pystray.Menu(*menu)
+                )
+                
+                # Start the icon in a separate thread
+                self.icon_thread = threading.Thread(target=self.run_icon, daemon=True)
+                self.icon_thread.start()
+                
+            except Exception as e:
+                self.update_results(f"Error creating tray icon: {e}\n")
+                # Restore window if tray icon fails
+                self.master.deiconify()
 
     def quit_window(self, icon=None):
         # First stop listening to clean up resources
@@ -316,9 +465,11 @@ class Application:
         # Forcibly exit the application after a short delay
         self.master.after(100, lambda: os._exit(0))
     
-    def show_window(self, icon):
-        if icon:
-            icon.stop()
+    def show_window(self, icon=None):
+        """Show the main window and stop the tray icon"""
+        if self.icon:
+            self.icon.stop()
+            self.icon = None
         self.master.after(0, self.master.deiconify)
     
     def toggle_listen(self):
@@ -336,97 +487,127 @@ class Application:
         return port_string.split(' - ')[0]
     
     def start_listening(self):
-        # Get selected port names
-        input_port_full = self.input_com_var.get()
-        output_port_full = self.output_com_var.get()
-        
-        if input_port_full == "No COM Ports Found" or output_port_full == "No COM Ports Found":
-            messagebox.showerror("Error", "Please select valid COM ports.")
-            return False
-        
-        # Extract actual port names
-        input_port = self.extract_port_name(input_port_full)
-        output_port = self.extract_port_name(output_port_full)
-        
-        # Get baud rates
-        input_baud = int(self.input_baud_var.get())
-        output_baud = int(self.output_baud_var.get())
-        
         try:
-            # Open input serial port
-            self.input_serial = serial.Serial(input_port, baudrate=input_baud, timeout=1)
-            self.update_results(f"Connected to input port {input_port} at {input_baud} baud.\n")
+            # Open output port first
+            output_port = self.extract_port_name(self.output_com_var.get())
+            if output_port and output_port != "None":
+                self.output_serial = serial.Serial(
+                    output_port,
+                    baudrate=int(self.output_baud_var.get()),
+                    timeout=1
+                )
+                self.update_results(f"Connected to output port: {output_port}\n")
             
-            # Open output serial port
-            self.output_serial = serial.Serial(output_port, baudrate=output_baud, timeout=1)
-            self.update_results(f"Connected to output port {output_port} at {output_baud} baud.\n")
+            # Open input ports
+            input1_port = self.extract_port_name(self.input1_com_var.get())
+            if input1_port and input1_port != "None":
+                self.input_serials[0] = serial.Serial(
+                    input1_port,
+                    baudrate=int(self.input1_baud_var.get()),
+                    timeout=1
+                )
+                self.update_results(f"Connected to input port 1: {input1_port}\n")
             
-            # Reset shutdown flag
-            self.shutdown_flag.clear()
+            input2_port = self.extract_port_name(self.input2_com_var.get())
+            if input2_port and input2_port != "None":
+                self.input_serials[1] = serial.Serial(
+                    input2_port,
+                    baudrate=int(self.input2_baud_var.get()),
+                    timeout=1
+                )
+                self.update_results(f"Connected to input port 2: {input2_port}\n")
             
-            # Start reading thread
-            self.serial_thread = threading.Thread(target=self.read_serial_data)
-            self.serial_thread.daemon = True
-            self.serial_thread.start()
+            # Save configuration
+            self.save_configuration()
             
-            return True
-            
+            # Start reading thread only if at least one input port is open
+            if any(serial_conn is not None for serial_conn in self.input_serials):
+                self.serial_thread = threading.Thread(target=self.read_serial_data)
+                self.serial_thread.daemon = True
+                self.serial_thread.start()
+                return True
+            else:
+                messagebox.showerror("Error", "No input ports configured")
+                return False
+                
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to open COM ports: {e}")
+            messagebox.showerror("Error", f"Failed to open ports: {e}")
             self.stop_listening()
             return False
     
+    def save_configuration(self):
+        """Save current configuration"""
+        config = {
+            'input_port1': self.input1_com_var.get(),
+            'input_port2': self.input2_com_var.get(),
+            'input_baud1': self.input1_baud_var.get(),
+            'input_baud2': self.input2_baud_var.get(),
+            'output_port': self.output_com_var.get(),
+            'output_baud': self.output_baud_var.get(),
+            'switch_number': self.switch_number.get()
+        }
+        self.config_manager.save_config(config)
+    
     def stop_listening(self):
-        # Send OFF commands before closing
-        if hasattr(self, 'output_serial') and self.output_serial and self.output_serial.is_open:
-            try:
-                # Turn off switch 1
-                self.output_serial.write(('@OFF01$' + "\r\n").encode('utf-8'))
-                self.update_results("Sent to I/O controller: @OFF01$\n")
-                time.sleep(0.1)
-                
-                # Turn off switch 2
-                self.output_serial.write(('@OFF02$' + "\r\n").encode('utf-8'))
-                self.update_results("Sent to I/O controller: @OFF02$\n")
-            except Exception as e:
-                self.update_results(f"Error sending OFF commands: {e}\n")
+        """Stop listening and properly close all COM ports"""
+        try:
+            # Send OFF commands before closing
+            if hasattr(self, 'output_serial') and self.output_serial and self.output_serial.is_open:
+                try:
+                    # Turn off both switches
+                    self.output_serial.write(('@OFF01$' + "\r\n").encode('utf-8'))
+                    self.output_serial.write(('@OFF02$' + "\r\n").encode('utf-8'))
+                    self.update_results("Sent OFF commands to I/O controller\n")
+                    time.sleep(0.1)
+                except Exception as e:
+                    self.update_results(f"Error sending OFF commands: {e}\n")
 
-        self.running = False
-        self.shutdown_flag.set()  # Signal thread to terminate
-        
-        # Close input serial port
-        if hasattr(self, 'input_serial') and self.input_serial and self.input_serial.is_open:
-            try:
-                self.input_serial.close()
-                self.update_results("Input port closed.\n")
-            except Exception:
-                pass
-            
-        # Close output serial port
-        if hasattr(self, 'output_serial') and self.output_serial and self.output_serial.is_open:
-            try:
-                self.output_serial.close()
-                self.update_results("Output port closed.\n")
-            except Exception:
-                pass
-                
-        # Wait for thread to terminate (with timeout)
-        if self.serial_thread and self.serial_thread.is_alive():
-            self.serial_thread.join(timeout=1.0)
+            # Signal thread to terminate
+            self.running = False
+            self.shutdown_flag.set()
+
+            # Close all input serial ports
+            for i, serial_conn in enumerate(self.input_serials):
+                if serial_conn and serial_conn.is_open:
+                    try:
+                        serial_conn.close()
+                        self.input_serials[i] = None
+                        self.update_results(f"Input port {i+1} closed\n")
+                    except Exception as e:
+                        self.update_results(f"Error closing input port {i+1}: {e}\n")
+
+            # Close output serial port
+            if hasattr(self, 'output_serial') and self.output_serial:
+                try:
+                    if self.output_serial.is_open:
+                        self.output_serial.close()
+                    self.output_serial = None
+                    self.update_results("Output port closed\n")
+                except Exception as e:
+                    self.update_results(f"Error closing output port: {e}\n")
+
+            # Wait for thread to terminate
+            if self.serial_thread and self.serial_thread.is_alive():
+                self.serial_thread.join(timeout=1.0)
+                self.serial_thread = None
+
+        except Exception as e:
+            self.update_results(f"Error in stop_listening: {e}\n")
     
     def read_serial_data(self):
+        """Read data from all input ports"""
         self.update_results("Listening for barcode scans...\n")
         
         while not self.shutdown_flag.is_set() and self.running:
             try:
-                if self.input_serial and self.input_serial.is_open:
-                    if self.input_serial.in_waiting > 0:
-                        data = self.input_serial.readline().decode('utf-8', errors='replace').strip()
-                        
+                # Check both input ports
+                for i, serial_conn in enumerate(self.input_serials):
+                    if serial_conn and serial_conn.is_open and serial_conn.in_waiting > 0:
+                        data = serial_conn.readline().decode('utf-8', errors='replace').strip()
                         if data:
-                            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                            log_message = f"[{timestamp}] Received: {data}\n"                        
-                            self.update_results(log_message)
+                            # Update both logs
+                            self.update_results(f"Input {i+1} Received: {data}\n")
+                            self.update_scanned_barcodes(data)
                             
                             if self.output_serial and self.output_serial.is_open:
                                 try:
@@ -440,6 +621,7 @@ class Application:
                                             self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
                                             # Show success popup
                                             self.master.after(0, lambda: self.show_alert_popup(True, f"Barcode: {data}\nCommand: {command}"))
+                                            self.update_scanned_barcodes(data.strip())
                                     else:
                                         self.output_serial.write(('@OFF01$' + "\r\n").encode('utf-8'))
                                         self.output_serial.write(('@OFF02$' + "\r\n").encode('utf-8'))
@@ -568,64 +750,68 @@ class Application:
             return False        
 
     def validate_barcode(self, data):
-        """Validate barcode against input list"""
+        """Validate barcode against input list and master list"""
         try:
+            # Check input list first (for removal)
             if not self.barcode_list:
                 self.update_results("No barcodes in input list\n")
                 return False
                 
             data = data.strip()
             if data == self.barcode_list[0]:
-                # Remove the matched barcode from the list
+                # Remove from input list
                 self.barcode_list.pop(0)
-                
-                # Update input text
                 self.master.after(0, self.update_input_text)
-                return True
-            else:
-                self.update_results(f"Barcode mismatch. Expected: {self.barcode_list[0]}, Got: {data}\n")
-                return False
+                
+                # Find and highlight in master list
+                master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
+                for i, barcode in enumerate(master_barcodes, 1):
+                    if barcode.strip() == data:
+                        self.master.after(0, lambda i=i: self.highlight_matched_barcode(i))
+                        return True
+                
+            self.update_results(f"Expected: {self.barcode_list[0]}, Got: {data}\n")
+            return False
                 
         except Exception as e:
             self.update_results(f"Validation error: {e}\n")
             return False
 
-    def validate_input_text(self, event):
-        """Validate input text to ensure proper barcode format per line"""
+    def highlight_matched_barcode(self, line_number):
+        """Highlight the matched barcode in green"""
         try:
-            # Get all text content
+            # Remove previous tag
+            self.master_text.tag_remove('unmatched', f"{line_number}.0", f"{line_number}.end")
+            # Add matched tag
+            self.master_text.tag_add('matched', f"{line_number}.0", f"{line_number}.end")
+        except tk.TclError:
+            pass
+
+    def validate_input_text(self, event):
+        """Validate input text and update master list"""
+        try:
+            # Get content from input text
             content = self.input_text.get("1.0", tk.END).strip()
-            
-            # Split into lines and clean
             lines = content.split('\n')
-            cleaned_lines = []
-            
-            for line in lines:
-                # Remove extra whitespace but keep valid lines
-                cleaned = line.strip()
-                if cleaned:
-                    cleaned_lines.append(cleaned)
+            cleaned_lines = [line.strip() for line in lines if line.strip()]
             
             # Update barcode list
             self.barcode_list = cleaned_lines
             
-            # Only update text if content has changed
-            new_content = '\n'.join(cleaned_lines)
-            if content != new_content:
-                # Save cursor position
-                cursor_pos = self.input_text.index(tk.INSERT)
-                
-                # Update text content
-                self.input_text.delete("1.0", tk.END)
-                self.input_text.insert("1.0", new_content)
-                
-                # Restore cursor position if possible
-                try:
-                    self.input_text.mark_set(tk.INSERT, cursor_pos)
-                except tk.TclError:
-                    pass
-                    
-            # Update results display
+            # Update master text preserving existing tags
+            current_content = self.master_text.get("1.0", tk.END).splitlines()
+            current_content = [line.strip() for line in current_content if line.strip()]
+            
+            self.master_text.delete("1.0", tk.END)
+            for line in cleaned_lines:
+                # Check if line was previously matched
+                if line in current_content:
+                    idx = current_content.index(line)
+                    if "matched" in self.master_text.tag_names(f"{idx+1}.0"):
+                        self.master_text.insert(tk.END, f"{line}\n", 'matched')
+                        continue
+                self.master_text.insert(tk.END, f"{line}\n", 'unmatched')
+            
             self.update_results(f"Loaded {len(cleaned_lines)} barcodes\n")
             
         except Exception as e:
@@ -658,16 +844,20 @@ class Application:
                 self.icon_thread.join(timeout=2.0)
 
     def run_icon(self):
-        """Run system tray icon in separate thread"""
-        self.icon.run()
+        """Run the tray icon"""
+        if self.icon:
+            self.icon.run()
 
     def on_closing(self):
         """Handle window closing event"""
         if messagebox.askokcancel("Quit", "Do you want to quit?"):
             self.cleanup()
+            if self.icon:
+                self.icon.stop()
+                self.icon = None
             self.master.quit()
             self.master.destroy()
-            os._exit(0)  # Force exit if needed
+            os._exit(0)
 
     def show_alert_popup(self, is_success, message):
         """Show alert popup with description. NG alerts require manual closing"""
@@ -813,9 +1003,134 @@ class Application:
             self.barcode_list.clear()
             self.update_results("Cleared all barcodes\n")
 
+    def toggle_log_visibility(self):
+        """Toggle the visibility of the communication log"""
+        if self.log_visible:
+            self.log_frame.pack_forget()
+            self.toggle_log_btn.config(text="Show Log")
+            self.log_visible = False
+        else:
+            self.log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+            self.toggle_log_btn.config(text="Hide Log")
+            self.log_visible = True
+
+    def update_scanned_barcodes(self, barcode):
+        """Update the scanned barcodes list"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.master.after(0, lambda: self._safe_scanned_update(f"[{timestamp}] {barcode}\n"))
+
+    def _safe_scanned_update(self, text):
+        """Safely update scanned barcodes text widget"""
+        try:
+            self.scanned_text.insert(tk.END, text)
+            self.scanned_text.see(tk.END)
+            
+            # Limit list size for performance (keep last 1000 lines)
+            line_count = int(self.scanned_text.index('end-1c').split('.')[0])
+            if line_count > 1000:
+                self.scanned_text.delete('1.0', f'{line_count-1000}.0')
+        except tk.TclError:
+            pass
+
+    def move_master_up(self):
+        """Move selected barcode up in the master list"""
+        if self.running:
+            return
+            
+        try:
+            # Get current selection
+            try:
+                sel_start = self.master_text.index("sel.first").split(".")[0]
+                sel_end = self.master_text.index("sel.last").split(".")[0]
+            except tk.TclError:
+                return
+                
+            # Convert to line numbers
+            current_line = int(sel_start)
+            if current_line > 1:
+                # Get all lines and their tags
+                lines = []
+                tags = []
+                for i, line in enumerate(self.master_text.get("1.0", tk.END).splitlines(), 1):
+                    lines.append(line)
+                    if "matched" in self.master_text.tag_names(f"{i}.0"):
+                        tags.append('matched')
+                    else:
+                        tags.append('unmatched')
+                
+                # Swap lines and tags
+                lines[current_line-2], lines[current_line-1] = lines[current_line-1], lines[current_line-2]
+                tags[current_line-2], tags[current_line-1] = tags[current_line-1], tags[current_line-2]
+                
+                # Update text and preserve tags
+                self.master_text.delete("1.0", tk.END)
+                for line, tag in zip(lines, tags):
+                    self.master_text.insert(tk.END, f"{line}\n", tag)
+                
+                # Update selection
+                new_line = current_line - 1
+                self.master_text.tag_add("sel", f"{new_line}.0", f"{new_line}.end")
+                
+        except Exception as e:
+            self.update_results(f"Error moving master barcode: {e}\n")
+
+    def move_master_down(self):
+        """Move selected barcode down in the master list"""
+        if self.running:
+            return
+            
+        try:
+            # Get current selection
+            try:
+                sel_start = self.master_text.index("sel.first").split(".")[0]
+                sel_end = self.master_text.index("sel.last").split(".")[0]
+            except tk.TclError:
+                return
+                
+            # Convert to line numbers
+            current_line = int(sel_start)
+            total_lines = int(self.master_text.index("end-1c").split(".")[0])
+            
+            if current_line < total_lines:
+                # Get all lines and their tags
+                lines = []
+                tags = []
+                for i, line in enumerate(self.master_text.get("1.0", tk.END).splitlines(), 1):
+                    lines.append(line)
+                    if "matched" in self.master_text.tag_names(f"{i}.0"):
+                        tags.append('matched')
+                    else:
+                        tags.append('unmatched')
+                
+                # Swap lines and tags
+                lines[current_line-1], lines[current_line] = lines[current_line], lines[current_line-1]
+                tags[current_line-1], tags[current_line] = tags[current_line], tags[current_line-1]
+                
+                # Update text and preserve tags
+                self.master_text.delete("1.0", tk.END)
+                for line, tag in zip(lines, tags):
+                    self.master_text.insert(tk.END, f"{line}\n", tag)
+                
+                # Update selection
+                new_line = current_line + 1
+                self.master_text.tag_add("sel", f"{new_line}.0", f"{new_line}.end")
+                
+        except Exception as e:
+            self.update_results(f"Error moving master barcode: {e}\n")
+
+    def clear_master(self):
+        """Clear all barcodes from master list"""
+        if self.running:
+            return
+            
+        if messagebox.askokcancel("Clear Master Barcodes", "Are you sure you want to clear all master barcodes?"):
+            self.master_text.delete("1.0", tk.END)
+            self.input_text.delete("1.0", tk.END)
+            self.barcode_list.clear()
+            self.update_results("Cleared all master barcodes\n")
+
 def main():
     root = tk.Tk()
-    root.iconbitmap("app.ico")
     app = Application(root)
     root.mainloop()
 
