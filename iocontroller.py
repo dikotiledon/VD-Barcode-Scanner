@@ -18,6 +18,7 @@ class Application:
         self.master.title("Barcode Scanner")
         self.master.geometry('600x500+100+100')
         self.master.protocol('WM_DELETE_WINDOW', self.on_closing)
+        self.printer_serial = None
         
         # Set window icon
         try:
@@ -144,6 +145,15 @@ class Application:
                                               values=com_ports, width=30)
         self.output_com_dropdown.pack(side=tk.LEFT, padx=5)
 
+        # Add Printer Port
+        printer_frame = tk.Frame(ports_frame)
+        printer_frame.pack(fill=tk.X, pady=2)
+        tk.Label(printer_frame, text="Printer:").pack(side=tk.LEFT)
+        self.printer_com_var = tk.StringVar(value=self.config['printer_port'])
+        self.printer_com_dropdown = ttk.Combobox(printer_frame, textvariable=self.printer_com_var, 
+                                               values=com_ports, width=30)
+        self.printer_com_dropdown.pack(side=tk.LEFT, padx=5)
+        
         # Right side: Port Configurations
         config_frame = tk.LabelFrame(com_ports_frame, text="Port Configuration")
         config_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -179,6 +189,14 @@ class Application:
         self.switch_number = tk.StringVar(value=self.config['switch_number'])
         ttk.Combobox(switch_frame, textvariable=self.switch_number, 
                      values=["1", "2"], width=7).pack(side=tk.LEFT, padx=5)
+        
+        # Add Printer Configuration
+        printer_config_frame = tk.Frame(config_frame)
+        printer_config_frame.pack(fill=tk.X, pady=2)
+        tk.Label(printer_config_frame, text="Printer Baud:").pack(side=tk.LEFT)
+        self.printer_baud_var = tk.StringVar(value=self.config['printer_baud'])
+        ttk.Combobox(printer_config_frame, textvariable=self.printer_baud_var, 
+                     values=["9600", "19200", "38400", "57600", "115200"], width=7).pack(side=tk.LEFT, padx=5)
         
         # Refresh button at the bottom
         refresh_btn = tk.Button(com_ports_frame, text="Refresh Ports", command=self.refresh_com_ports)
@@ -366,6 +384,7 @@ class Application:
         self.input1_com_dropdown['values'] = com_ports
         self.input2_com_dropdown['values'] = com_ports
         self.output_com_dropdown['values'] = com_ports
+        self.printer_com_dropdown['values'] = com_ports
         
         if com_ports:
             if self.input1_com_var.get() == "No COM Ports Found":
@@ -374,10 +393,13 @@ class Application:
                 self.input2_com_var.set(com_ports[0])
             if self.output_com_var.get() == "No COM Ports Found":
                 self.output_com_var.set(com_ports[0])
+            if self.printer_com_var.get() == "No COM Ports Found":
+                self.printer_com_var.set(com_ports[0])
         else:
             self.input1_com_var.set("No COM Ports Found")
             self.input2_com_var.set("No COM Ports Found")
             self.output_com_var.set("No COM Ports Found")
+            self.printer_com_var.set("No COM Ports Found")
             
         self.update_results("COM ports refreshed.\n")
     
@@ -488,6 +510,11 @@ class Application:
     
     def start_listening(self):
         try:
+            # Reset all serial connections first
+            self.input_serials = [None, None]
+            self.output_serial = None
+            self.printer_serial = None
+            
             # Open output port first
             output_port = self.extract_port_name(self.output_com_var.get())
             if output_port and output_port != "None":
@@ -497,6 +524,15 @@ class Application:
                     timeout=1
                 )
                 self.update_results(f"Connected to output port: {output_port}\n")
+                    # Open printer port
+            printer_port = self.extract_port_name(self.printer_com_var.get())
+            if printer_port and printer_port != "None":
+                self.printer_serial = serial.Serial(
+                    printer_port,
+                    baudrate=int(self.printer_baud_var.get()),
+                    timeout=1
+                )
+                self.update_results(f"Connected to printer port: {printer_port}\n")
             
             # Open input ports
             input1_port = self.extract_port_name(self.input1_com_var.get())
@@ -516,6 +552,10 @@ class Application:
                     timeout=1
                 )
                 self.update_results(f"Connected to input port 2: {input2_port}\n")
+            
+            # Reset flags
+            self.shutdown_flag.clear()
+            self.running = True
             
             # Save configuration
             self.save_configuration()
@@ -544,6 +584,8 @@ class Application:
             'input_baud2': self.input2_baud_var.get(),
             'output_port': self.output_com_var.get(),
             'output_baud': self.output_baud_var.get(),
+            'printer_port': self.printer_com_var.get(),
+            'printer_baud': self.printer_baud_var.get(),
             'switch_number': self.switch_number.get()
         }
         self.config_manager.save_config(config)
@@ -551,20 +593,24 @@ class Application:
     def stop_listening(self):
         """Stop listening and properly close all COM ports"""
         try:
+            # Signal thread to terminate first
+            self.running = False
+            self.shutdown_flag.set()
+
+            # Wait for thread to terminate
+            if self.serial_thread and self.serial_thread.is_alive():
+                self.serial_thread.join(timeout=1.0)
+                self.serial_thread = None
+
             # Send OFF commands before closing
             if hasattr(self, 'output_serial') and self.output_serial and self.output_serial.is_open:
                 try:
-                    # Turn off both switches
                     self.output_serial.write(('@OFF01$' + "\r\n").encode('utf-8'))
                     self.output_serial.write(('@OFF02$' + "\r\n").encode('utf-8'))
                     self.update_results("Sent OFF commands to I/O controller\n")
                     time.sleep(0.1)
                 except Exception as e:
                     self.update_results(f"Error sending OFF commands: {e}\n")
-
-            # Signal thread to terminate
-            self.running = False
-            self.shutdown_flag.set()
 
             # Close all input serial ports
             for i, serial_conn in enumerate(self.input_serials):
@@ -586,65 +632,146 @@ class Application:
                 except Exception as e:
                     self.update_results(f"Error closing output port: {e}\n")
 
-            # Wait for thread to terminate
-            if self.serial_thread and self.serial_thread.is_alive():
-                self.serial_thread.join(timeout=1.0)
-                self.serial_thread = None
+            # Close printer port
+            if hasattr(self, 'printer_serial') and self.printer_serial:
+                try:
+                    if self.printer_serial.is_open:
+                        self.printer_serial.close()
+                    self.printer_serial = None
+                    self.update_results("Printer port closed\n")
+                except Exception as e:
+                    self.update_results(f"Error closing printer port: {e}\n")
 
         except Exception as e:
             self.update_results(f"Error in stop_listening: {e}\n")
     
     def read_serial_data(self):
-        """Read data from all input ports"""
+        """Read data from both input ports with different behaviors"""
         self.update_results("Listening for barcode scans...\n")
         
         while not self.shutdown_flag.is_set() and self.running:
             try:
-                # Check both input ports
+                # Check input ports
                 for i, serial_conn in enumerate(self.input_serials):
                     if serial_conn and serial_conn.is_open and serial_conn.in_waiting > 0:
                         data = serial_conn.readline().decode('utf-8', errors='replace').strip()
                         if data:
-                            # Update both logs
-                            self.update_results(f"Input {i+1} Received: {data}\n")
-                            self.update_scanned_barcodes(data)
-                            
-                            if self.output_serial and self.output_serial.is_open:
-                                try:
-                                    if self.validate_barcode(data):
-                                        if data.strip() != self.last_barcode:
-                                            command = '@ON01$' if int(self.switch_number.get()) == 1 else '@ON02$'
-                                            self.output_serial.write((command + "\r\n").encode('utf-8'))
-                                            self.update_results(f"Sent to I/O controller: {command}\n")
-                                            self.last_barcode = data.strip()
-                                            time.sleep(2.0)
-                                            self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
-                                            # Show success popup
-                                            self.master.after(0, lambda: self.show_alert_popup(True, f"Barcode: {data}\nCommand: {command}"))
-                                            self.update_scanned_barcodes(data.strip())
-                                    else:
-                                        self.output_serial.write(('@OFF01$' + "\r\n").encode('utf-8'))
-                                        self.output_serial.write(('@OFF02$' + "\r\n").encode('utf-8'))
-                                        self.update_results(f"Sent to I/O controller: @OFF01$\n")
-                                        # Show failure popup
-                                        self.master.after(0, lambda: self.show_alert_popup(False, 
-                                            f"Expected: {self.barcode_list[0] if self.barcode_list else 'No barcode in list'}\nGot: {data}"))
-                                        # Use after method to safely call UI methods from thread
-                                        self.master.after(0, self.toggle_listen)
-                                        return
-                                except Exception as e:
-                                    self.update_results(f"Error sending to output port: {e}\n")
-                
+                            if i == 0:  # Input 1 - Master Barcodes only
+                                self.update_results(f"Master Input Received: {data}\n")
+                                self.add_to_master_list(data)
+                            else:  # Input 2 - Validation against master list
+                                self.update_results(f"Input Received: {data}\n")
+                                self.validate_barcode(data)
+                                
                 time.sleep(0.05)
                 
             except Exception as e:
                 self.update_results(f"Error in serial communication: {e}\n")
                 time.sleep(1)
+
+    def validate_barcode(self, data):
+        """Validate barcode against master list in order"""
+        try:
+            data = data.strip()
+            master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
+            master_barcodes = [b.strip() for b in master_barcodes if b.strip()]
+            
+            if not master_barcodes:
+                self.master.after(0, lambda: self.show_alert_popup(False, "No master barcodes defined"))
+                # Log the failed attempt
+                self.update_scanned_barcodes(data, False)
+                return False
                 
-            if not self.running or self.shutdown_flag.is_set():
-                break
+            # Check if barcode matches the first unmatched barcode in master list
+            for i, barcode in enumerate(master_barcodes, 1):
+                if barcode.strip() == data:
+                    # Check if this is the first unmatched barcode
+                    if not self.is_any_unmatched_barcode_before(i):
+                        # Success case
+                        if data.strip() != self.last_barcode:
+                            # Process successful scan
+                            command = '@ON01$' if int(self.switch_number.get()) == 1 else '@ON02$'
+                            if self.output_serial and self.output_serial.is_open:
+                                self.output_serial.write((command + "\r\n").encode('utf-8'))
+                                self.update_results(f"Sent to I/O controller: {command}\n")
+                                self.last_barcode = data.strip()
+                                time.sleep(2.0)
+                                self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
+                            
+                            # Send to printer when validation succeeds
+                            if self.printer_serial and self.printer_serial.is_open:
+                                printer_data = f"{data}\r\n"
+                                self.printer_serial.write(printer_data.encode('utf-8'))
+                                
+                            # Log successful scan
+                            self.update_scanned_barcodes(data, True)
+                            
+                            # Highlight matched barcode
+                            self.master.after(0, lambda i=i: self.highlight_matched_barcode(i))
+                            
+                            # Show success popup
+                            self.master.after(0, lambda: self.show_alert_popup(True, 
+                                f"Barcode: {data}\nCommand: {command}"))
+                            return True
+                    else:
+                        # Found but not in order - log failed attempt
+                        self.update_scanned_barcodes(data, False)
+                        self.master.after(0, lambda: self.show_alert_popup(False, 
+                            f"Incorrect order. Please scan previous barcodes first."))
+                        return False
+            
+            # No match found - log failed attempt
+            self.update_scanned_barcodes(data, False)
+            self.master.after(0, lambda: self.show_alert_popup(False, 
+                f"Barcode not found in master list:\n{data}"))
+            return False
                 
-        self.update_results("Serial monitoring thread stopped.\n")
+        except Exception as e:
+            self.update_scanned_barcodes(data, False)
+            self.update_results(f"Validation error: {e}\n")
+            return False
+
+    def update_scanned_barcodes(self, barcode, is_success):
+        """Update the scanned barcodes list with simplified format"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        status = "OK" if is_success else "NG"
+        log_entry = f"[{timestamp}] {barcode} - {status}\n"
+        self.master.after(0, lambda: self._safe_scanned_update(log_entry))
+
+    def _safe_scanned_update(self, text):
+        """Safely update scanned barcodes text widget"""
+        try:
+            self.scanned_text.insert(tk.END, text)
+            self.scanned_text.see(tk.END)
+            
+            # Limit list size for performance (keep last 1000 lines)
+            line_count = int(self.scanned_text.index('end-1c').split('.')[0])
+            if line_count > 1000:
+                self.scanned_text.delete('1.0', f'{line_count-1000}.0')
+        except tk.TclError:
+            pass
+
+    def is_any_unmatched_barcode_before(self, line_number):
+        """Check if there are any unmatched barcodes before the given line"""
+        try:
+            for i in range(1, line_number):
+                if "matched" not in self.master_text.tag_names(f"{i}.0"):
+                    return True
+            return False
+        except tk.TclError:
+            return False
+
+    def add_to_master_list(self, data):
+        """Add barcode to master list from Input 1"""
+        self.master.after(0, lambda: self._safe_master_update(data))
+
+    def _safe_master_update(self, data):
+        """Safely update master text widget"""
+        try:
+            # Add to master list with unmatched tag only
+            self.master_text.insert(tk.END, f"{data}\n", 'unmatched')
+        except tk.TclError:
+            pass
 
     def switch_to_usb_mode(self):
         """Switch input interface to USB barcode scanner"""
@@ -750,27 +877,54 @@ class Application:
             return False        
 
     def validate_barcode(self, data):
-        """Validate barcode against input list and master list"""
+        """Validate barcode against master list in order"""
         try:
-            # Check input list first (for removal)
-            if not self.barcode_list:
-                self.update_results("No barcodes in input list\n")
+            data = data.strip()
+            master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
+            master_barcodes = [b.strip() for b in master_barcodes if b.strip()]
+            
+            if not master_barcodes:
+                self.master.after(0, lambda: self.show_alert_popup(False, "No master barcodes defined"))
                 return False
                 
-            data = data.strip()
-            if data == self.barcode_list[0]:
-                # Remove from input list
-                self.barcode_list.pop(0)
-                self.master.after(0, self.update_input_text)
-                
-                # Find and highlight in master list
-                master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
-                for i, barcode in enumerate(master_barcodes, 1):
-                    if barcode.strip() == data:
-                        self.master.after(0, lambda i=i: self.highlight_matched_barcode(i))
-                        return True
-                
-            self.update_results(f"Expected: {self.barcode_list[0]}, Got: {data}\n")
+            # Check if barcode matches the first unmatched barcode in master list
+            for i, barcode in enumerate(master_barcodes, 1):
+                if barcode.strip() == data:
+                    # Check if this is the first unmatched barcode
+                    if not self.is_any_unmatched_barcode_before(i):
+                        # Success case
+                        if data.strip() != self.last_barcode:
+                            # Send to I/O controller
+                            command = '@ON01$' if int(self.switch_number.get()) == 1 else '@ON02$'
+                            if self.output_serial and self.output_serial.is_open:
+                                self.output_serial.write((command + "\r\n").encode('utf-8'))
+                                self.update_results(f"Sent to I/O controller: {command}\n")
+                                self.last_barcode = data.strip()
+                                time.sleep(2.0)
+                                self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
+                            
+                            # Send to printer when validation succeeds
+                            if self.printer_serial and self.printer_serial.is_open:
+                                printer_data = f"{data}\r\n"
+                                self.printer_serial.write(printer_data.encode('utf-8'))
+                                self.update_results(f"Sent to printer: {data}\n")
+                            
+                            # Highlight matched barcode
+                            self.master.after(0, lambda i=i: self.highlight_matched_barcode(i))
+                            
+                            # Show success popup
+                            self.master.after(0, lambda: self.show_alert_popup(True, 
+                                f"Barcode: {data}\nCommand: {command}"))
+                            return True
+                    else:
+                        # Found but not in order
+                        self.master.after(0, lambda: self.show_alert_popup(False, 
+                            f"Incorrect order. Please scan previous barcodes first."))
+                        return False
+            
+            # No match found
+            self.master.after(0, lambda: self.show_alert_popup(False, 
+                f"Barcode not found in master list:\n{data}"))
             return False
                 
         except Exception as e:
