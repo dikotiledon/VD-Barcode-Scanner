@@ -16,7 +16,7 @@ class Application:
     def __init__(self, master):
         self.master = master
         self.master.title("Barcode Scanner")
-        self.master.geometry('600x500+100+100')
+        self.master.geometry('700x500+100+100')
         self.master.protocol('WM_DELETE_WINDOW', self.on_closing)
         self.printer_serial = None
         
@@ -241,7 +241,7 @@ class Application:
         self.delete_btn.pack(side=tk.RIGHT, padx=2)
         
         # Input text box (read-only)
-        self.input_text = tk.Text(input_frame, width=30, height=10, wrap=tk.WORD, state="disabled")
+        self.input_text = tk.Text(input_frame, width=30, height=10, wrap=tk.WORD, state="disabled", font=("Arial", 16))
         self.input_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Add scrollbar for input
@@ -287,7 +287,7 @@ class Application:
         )
         self.master_delete_btn.pack(side=tk.RIGHT, padx=2)
         
-        self.master_text = tk.Text(master_frame, height=20, bg='lightgray', state="disabled")
+        self.master_text = tk.Text(master_frame, width=30, height=10, bg='lightgray', state="disabled", font=("Arial", 16))
         self.master_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Add scrollbar for master list
