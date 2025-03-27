@@ -214,7 +214,7 @@ class Application:
         input_buttons_frame = tk.Frame(input_frame)
         input_buttons_frame.pack(fill=tk.X, padx=5, pady=2)
         
-        # Add move up/down/clear buttons
+        # Add move up/down/clear/delete buttons
         self.move_up_btn = tk.Button(
             input_buttons_frame,
             text="▲",
@@ -231,17 +231,17 @@ class Application:
         )
         self.move_down_btn.pack(side=tk.LEFT, padx=2)
         
-        self.clear_btn = tk.Button(
+        self.delete_btn = tk.Button(
             input_buttons_frame,
-            text="Clear All",
-            command=self.clear_barcodes,
-            bg="red",
+            text="Delete Selected",
+            command=self.delete_selected_input_barcode,
+            bg="orange",
             fg="white"
         )
-        self.clear_btn.pack(side=tk.RIGHT, padx=2)
+        self.delete_btn.pack(side=tk.RIGHT, padx=2)
         
-        # Input text box
-        self.input_text = tk.Text(input_frame, width=30, height=10, wrap=tk.WORD)
+        # Input text box (read-only)
+        self.input_text = tk.Text(input_frame, width=30, height=10, wrap=tk.WORD, state="disabled")
         self.input_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Add scrollbar for input
@@ -261,7 +261,7 @@ class Application:
         master_buttons_frame = tk.Frame(master_frame)
         master_buttons_frame.pack(fill=tk.X, padx=5, pady=2)
         
-        # Add move up/down/clear buttons for master list
+        # Add move up/down/clear/delete buttons for master list
         self.master_up_btn = tk.Button(
             master_buttons_frame,
             text="▲",
@@ -278,16 +278,16 @@ class Application:
         )
         self.master_down_btn.pack(side=tk.LEFT, padx=2)
         
-        self.master_clear_btn = tk.Button(
+        self.master_delete_btn = tk.Button(
             master_buttons_frame,
-            text="Clear All",
-            command=self.clear_master,
-            bg="red",
+            text="Delete Selected",
+            command=self.delete_selected_master_barcode,
+            bg="orange",
             fg="white"
         )
-        self.master_clear_btn.pack(side=tk.RIGHT, padx=2)
+        self.master_delete_btn.pack(side=tk.RIGHT, padx=2)
         
-        self.master_text = tk.Text(master_frame, height=20, bg='lightgray')
+        self.master_text = tk.Text(master_frame, height=20, bg='lightgray', state="disabled")
         self.master_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Add scrollbar for master list
@@ -299,19 +299,6 @@ class Application:
         # Configure tags for coloring
         self.master_text.tag_configure('matched', background='light green')
         self.master_text.tag_configure('unmatched', background='lightgray')
-        
-        # Scanned barcodes frame (right side)
-        scanned_frame = tk.LabelFrame(horizontal_frame, text="Scanned Barcodes")
-        scanned_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        self.scanned_text = tk.Text(scanned_frame, height=20)
-        self.scanned_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Add scrollbar for scanned barcodes
-        scanned_scrollbar = tk.Scrollbar(self.scanned_text)
-        scanned_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.scanned_text.config(yscrollcommand=scanned_scrollbar.set)
-        scanned_scrollbar.config(command=self.scanned_text.yview)
         
         # Add show/hide log button
         self.log_visible = False
@@ -404,8 +391,13 @@ class Application:
         self.update_results("COM ports refreshed.\n")
     
     def update_results(self, message):
+        """Update the communication log with a timestamp"""
+        # Add a readable timestamp to the message
+        timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
+        formatted_message = f"{timestamp} {message}"
+        
         # Use after method to update UI from thread safely
-        self.master.after(0, self._safe_text_update, message)
+        self.master.after(0, self._safe_text_update, formatted_message)
 
     def _safe_text_update(self, message):
         # Append message to results text
@@ -661,7 +653,8 @@ class Application:
                                 self.add_to_master_list(data)
                             else:  # Input 2 - Validation against master list
                                 self.update_results(f"Input Received: {data}\n")
-                                self.validate_barcode(data)
+                                is_valid = self.validate_barcode(data)
+                                self.add_to_input_barcodes(data, is_valid)
                                 
                 time.sleep(0.05)
                 
@@ -678,8 +671,6 @@ class Application:
             
             if not master_barcodes:
                 self.master.after(0, lambda: self.show_alert_popup(False, "No master barcodes defined"))
-                # Log the failed attempt
-                self.update_scanned_barcodes(data, False)
                 return False
                 
             # Check if barcode matches the first unmatched barcode in master list
@@ -693,7 +684,6 @@ class Application:
                             command = '@ON01$' if int(self.switch_number.get()) == 1 else '@ON02$'
                             if self.output_serial and self.output_serial.is_open:
                                 self.output_serial.write((command + "\r\n").encode('utf-8'))
-                                self.update_results(f"Sent to I/O controller: {command}\n")
                                 self.last_barcode = data.strip()
                                 time.sleep(2.0)
                                 self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
@@ -702,54 +692,26 @@ class Application:
                             if self.printer_serial and self.printer_serial.is_open:
                                 printer_data = f"{data}\r\n"
                                 self.printer_serial.write(printer_data.encode('utf-8'))
-                                
-                            # Log successful scan
-                            self.update_scanned_barcodes(data, True)
                             
-                            # Highlight matched barcode
-                            self.master.after(0, lambda i=i: self.highlight_matched_barcode(i))
+                            # Remove the matched barcode from the master list
+                            self.master.after(0, lambda i=i: self.remove_matched_master_barcode(i))
                             
                             # Show success popup
                             self.master.after(0, lambda: self.show_alert_popup(True, 
                                 f"Barcode: {data}\nCommand: {command}"))
                             return True
                     else:
-                        # Found but not in order - log failed attempt
-                        self.update_scanned_barcodes(data, False)
                         self.master.after(0, lambda: self.show_alert_popup(False, 
                             f"Incorrect order. Please scan previous barcodes first."))
                         return False
             
-            # No match found - log failed attempt
-            self.update_scanned_barcodes(data, False)
             self.master.after(0, lambda: self.show_alert_popup(False, 
                 f"Barcode not found in master list:\n{data}"))
             return False
                 
         except Exception as e:
-            self.update_scanned_barcodes(data, False)
             self.update_results(f"Validation error: {e}\n")
             return False
-
-    def update_scanned_barcodes(self, barcode, is_success):
-        """Update the scanned barcodes list with simplified format"""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        status = "OK" if is_success else "NG"
-        log_entry = f"[{timestamp}] {barcode} - {status}\n"
-        self.master.after(0, lambda: self._safe_scanned_update(log_entry))
-
-    def _safe_scanned_update(self, text):
-        """Safely update scanned barcodes text widget"""
-        try:
-            self.scanned_text.insert(tk.END, text)
-            self.scanned_text.see(tk.END)
-            
-            # Limit list size for performance (keep last 1000 lines)
-            line_count = int(self.scanned_text.index('end-1c').split('.')[0])
-            if line_count > 1000:
-                self.scanned_text.delete('1.0', f'{line_count-1000}.0')
-        except tk.TclError:
-            pass
 
     def is_any_unmatched_barcode_before(self, line_number):
         """Check if there are any unmatched barcodes before the given line"""
@@ -768,8 +730,14 @@ class Application:
     def _safe_master_update(self, data):
         """Safely update master text widget"""
         try:
+            # Temporarily enable the text widget
+            self.master_text.config(state="normal")
+
             # Add to master list with unmatched tag only
             self.master_text.insert(tk.END, f"{data}\n", 'unmatched')
+
+            # Disable the text widget again
+            self.master_text.config(state="disabled")
         except tk.TclError:
             pass
 
@@ -894,11 +862,10 @@ class Application:
                     if not self.is_any_unmatched_barcode_before(i):
                         # Success case
                         if data.strip() != self.last_barcode:
-                            # Send to I/O controller
+                            # Process successful scan
                             command = '@ON01$' if int(self.switch_number.get()) == 1 else '@ON02$'
                             if self.output_serial and self.output_serial.is_open:
                                 self.output_serial.write((command + "\r\n").encode('utf-8'))
-                                self.update_results(f"Sent to I/O controller: {command}\n")
                                 self.last_barcode = data.strip()
                                 time.sleep(2.0)
                                 self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
@@ -907,22 +874,19 @@ class Application:
                             if self.printer_serial and self.printer_serial.is_open:
                                 printer_data = f"{data}\r\n"
                                 self.printer_serial.write(printer_data.encode('utf-8'))
-                                self.update_results(f"Sent to printer: {data}\n")
                             
-                            # Highlight matched barcode
-                            self.master.after(0, lambda i=i: self.highlight_matched_barcode(i))
+                            # Remove the matched barcode from the master list
+                            self.master.after(0, lambda i=i: self.remove_matched_master_barcode(i))
                             
                             # Show success popup
                             self.master.after(0, lambda: self.show_alert_popup(True, 
                                 f"Barcode: {data}\nCommand: {command}"))
                             return True
                     else:
-                        # Found but not in order
                         self.master.after(0, lambda: self.show_alert_popup(False, 
                             f"Incorrect order. Please scan previous barcodes first."))
                         return False
             
-            # No match found
             self.master.after(0, lambda: self.show_alert_popup(False, 
                 f"Barcode not found in master list:\n{data}"))
             return False
@@ -930,16 +894,6 @@ class Application:
         except Exception as e:
             self.update_results(f"Validation error: {e}\n")
             return False
-
-    def highlight_matched_barcode(self, line_number):
-        """Highlight the matched barcode in green"""
-        try:
-            # Remove previous tag
-            self.master_text.tag_remove('unmatched', f"{line_number}.0", f"{line_number}.end")
-            # Add matched tag
-            self.master_text.tag_add('matched', f"{line_number}.0", f"{line_number}.end")
-        except tk.TclError:
-            pass
 
     def validate_input_text(self, event):
         """Validate input text and update master list"""
@@ -1074,117 +1028,93 @@ class Application:
             popup.geometry(f'+{x}+{y}')
 
     def move_barcode_up(self):
-        """Move selected barcode up in the list"""
+        """Move selected barcode up in the Input Barcodes window."""
         if self.running:
             return
-            
+
         try:
+            # Temporarily enable the text widget
+            self.input_text.config(state="normal")
+
             # Get current selection
-            try:
-                sel_start = self.input_text.index("sel.first").split(".")[0]
-                sel_end = self.input_text.index("sel.last").split(".")[0]
-            except tk.TclError:
-                return
-                
-            # Convert to line numbers
+            sel_start = self.input_text.index("sel.first").split(".")[0]
             current_line = int(sel_start)
+
             if current_line > 1:
                 # Get all lines
                 lines = self.input_text.get("1.0", tk.END).splitlines()
-                
+
                 # Swap lines
-                lines[current_line-2], lines[current_line-1] = lines[current_line-1], lines[current_line-2]
-                
+                lines[current_line - 2], lines[current_line - 1] = lines[current_line - 1], lines[current_line - 2]
+
                 # Update text and selection
                 self.input_text.delete("1.0", tk.END)
-                self.input_text.insert("1.0", "\n".join(lines))
-                
+                self.input_text.insert("1.0", "\n".join(lines) + "\n")
+
                 # Update selection
                 new_line = current_line - 1
                 self.input_text.tag_add("sel", f"{new_line}.0", f"{new_line}.end")
-                
-                # Update barcode list
-                self.barcode_list = [line.strip() for line in lines if line.strip()]
-                
+
+            # Disable the text widget again
+            self.input_text.config(state="disabled")
         except Exception as e:
             self.update_results(f"Error moving barcode: {e}\n")
 
     def move_barcode_down(self):
-        """Move selected barcode down in the list"""
+        """Move selected barcode down in the Input Barcodes window."""
         if self.running:
             return
-            
+
         try:
+            # Temporarily enable the text widget
+            self.input_text.config(state="normal")
+
             # Get current selection
-            try:
-                sel_start = self.input_text.index("sel.first").split(".")[0]
-                sel_end = self.input_text.index("sel.last").split(".")[0]
-            except tk.TclError:
-                return
-                
-            # Convert to line numbers
+            sel_start = self.input_text.index("sel.first").split(".")[0]
             current_line = int(sel_start)
             total_lines = int(self.input_text.index("end-1c").split(".")[0])
-            
+
             if current_line < total_lines:
                 # Get all lines
                 lines = self.input_text.get("1.0", tk.END).splitlines()
-                
+
                 # Swap lines
-                lines[current_line-1], lines[current_line] = lines[current_line], lines[current_line-1]
-                
+                lines[current_line - 1], lines[current_line] = lines[current_line], lines[current_line - 1]
+
                 # Update text and selection
                 self.input_text.delete("1.0", tk.END)
-                self.input_text.insert("1.0", "\n".join(lines))
-                
+                self.input_text.insert("1.0", "\n".join(lines) + "\n")
+
                 # Update selection
                 new_line = current_line + 1
                 self.input_text.tag_add("sel", f"{new_line}.0", f"{new_line}.end")
-                
-                # Update barcode list
-                self.barcode_list = [line.strip() for line in lines if line.strip()]
-                
+
+            # Disable the text widget again
+            self.input_text.config(state="disabled")
         except Exception as e:
             self.update_results(f"Error moving barcode: {e}\n")
 
-    def clear_barcodes(self):
-        """Clear all barcodes from input"""
-        if self.running:
-            return
-            
-        if messagebox.askokcancel("Clear Barcodes", "Are you sure you want to clear all barcodes?"):
-            self.input_text.delete("1.0", tk.END)
-            self.barcode_list.clear()
-            self.update_results("Cleared all barcodes\n")
-
-    def toggle_log_visibility(self):
-        """Toggle the visibility of the communication log"""
-        if self.log_visible:
-            self.log_frame.pack_forget()
-            self.toggle_log_btn.config(text="Show Log")
-            self.log_visible = False
-        else:
-            self.log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-            self.toggle_log_btn.config(text="Hide Log")
-            self.log_visible = True
-
-    def update_scanned_barcodes(self, barcode):
-        """Update the scanned barcodes list"""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.master.after(0, lambda: self._safe_scanned_update(f"[{timestamp}] {barcode}\n"))
-
-    def _safe_scanned_update(self, text):
-        """Safely update scanned barcodes text widget"""
+    def delete_selected_input_barcode(self):
+        """Delete the selected barcode from the Input Barcodes window."""
         try:
-            self.scanned_text.insert(tk.END, text)
-            self.scanned_text.see(tk.END)
-            
-            # Limit list size for performance (keep last 1000 lines)
-            line_count = int(self.scanned_text.index('end-1c').split('.')[0])
-            if line_count > 1000:
-                self.scanned_text.delete('1.0', f'{line_count-1000}.0')
+            # Temporarily enable the text widget
+            self.input_text.config(state="normal")
+
+            # Get the selected text
+            sel_start = self.input_text.index("sel.first")
+            sel_end = self.input_text.index("sel.last")
+
+            # Delete the selected text
+            self.input_text.delete(sel_start, sel_end)
+
+            # Update the barcode list
+            lines = self.input_text.get("1.0", tk.END).splitlines()
+            self.barcode_list = [line.strip() for line in lines if line.strip()]
+
+            # Disable the text widget again
+            self.input_text.config(state="disabled")
         except tk.TclError:
-            pass
+            pass  # No selection made
 
     def move_master_up(self):
         """Move selected barcode up in the master list"""
@@ -1272,6 +1202,50 @@ class Application:
         except Exception as e:
             self.update_results(f"Error moving master barcode: {e}\n")
 
+    def delete_selected_master_barcode(self):
+        """Delete the selected barcode from the Master Barcodes window."""
+        try:
+            # Temporarily enable the text widget
+            self.master_text.config(state="normal")
+
+            # Get the selected text
+            sel_start = self.master_text.index("sel.first")
+            sel_end = self.master_text.index("sel.last")
+
+            # Delete the selected text
+            self.master_text.delete(sel_start, sel_end)
+
+            # Disable the text widget again
+            self.master_text.config(state="disabled")
+        except tk.TclError:
+            pass  # No selection made
+
+    def clear_barcodes(self):
+        """Clear all barcodes from input"""
+        if self.running:
+            return
+            
+        if messagebox.askokcancel("Clear Barcodes", "Are you sure you want to clear all barcodes?"):
+            self.input_text.delete("1.0", tk.END)
+            self.barcode_list.clear()
+            self.update_results("Cleared all barcodes\n")
+
+    def toggle_log_visibility(self):
+        """Toggle the visibility of the communication log"""
+        if self.log_visible:
+            self.log_frame.pack_forget()
+            self.toggle_log_btn.config(text="Show Log")
+            self.log_visible = False
+        else:
+            self.log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+            self.toggle_log_btn.config(text="Hide Log")
+            self.log_visible = True
+
+    def update_scanned_barcodes(self, barcode):
+        """Update the scanned barcodes list"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.master.after(0, lambda: self._safe_scanned_update(f"[{timestamp}] {barcode}\n"))
+
     def clear_master(self):
         """Clear all barcodes from master list"""
         if self.running:
@@ -1282,6 +1256,46 @@ class Application:
             self.input_text.delete("1.0", tk.END)
             self.barcode_list.clear()
             self.update_results("Cleared all master barcodes\n")
+
+    def add_to_input_barcodes(self, data, is_valid):
+        """Add barcode to Input Barcodes window with appropriate color"""
+        try:
+            # Temporarily enable the text widget
+            self.input_text.config(state="normal")
+
+            # Insert barcode at the top of the input barcodes window
+            self.input_text.insert("1.0", f"{data}\n")
+            
+            # Apply color tag based on validation result
+            tag = 'ok' if is_valid else 'ng'
+            self.input_text.tag_add(tag, "1.0", "1.0 lineend")
+            
+            # Configure tags for coloring
+            self.input_text.tag_configure('ok', background='light green')
+            self.input_text.tag_configure('ng', background='red')
+
+            # Disable the text widget again
+            self.input_text.config(state="disabled")
+        except tk.TclError:
+            pass
+
+    def remove_matched_master_barcode(self, line_number):
+        """Remove the matched barcode from the Master Barcodes window"""
+        try:
+            # Temporarily enable the text widget
+            self.master_text.config(state="normal")
+
+            # Calculate the start and end indices of the line to remove
+            start_index = f"{line_number}.0"
+            end_index = f"{line_number + 1}.0"
+
+            # Delete the line
+            self.master_text.delete(start_index, end_index)
+
+            # Disable the text widget again
+            self.master_text.config(state="disabled")
+        except tk.TclError as e:
+            self.update_results(f"Error removing matched barcode: {e}\n")
 
 def main():
     root = tk.Tk()
