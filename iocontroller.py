@@ -651,7 +651,15 @@ class Application:
                             if i == 0:  # Input 1 - Master Barcodes only
                                 self.update_results(f"Master Input Received: {data}\n")
                                 self.add_to_master_list(data)
-                            else:  # Input 2 - Validation against master list
+                                
+                                # Send data to the Printer COM port only once
+                                if self.printer_serial and self.printer_serial.is_open:
+                                    try:
+                                        self.printer_serial.write(f"{data}\r\n".encode('utf-8'))
+                                        self.update_results(f"Sent to Printer: {data}\n")
+                                    except Exception as e:
+                                        self.update_results(f"Error sending to Printer: {e}\n")
+                            elif i == 1:  # Input 2 - Validation against master list
                                 self.update_results(f"Input Received: {data}\n")
                                 is_valid = self.validate_barcode(data)
                                 self.add_to_input_barcodes(data, is_valid)
@@ -687,11 +695,6 @@ class Application:
                                 self.last_barcode = data.strip()
                                 time.sleep(2.0)
                                 self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
-                            
-                            # Send to printer when validation succeeds
-                            if self.printer_serial and self.printer_serial.is_open:
-                                printer_data = f"{data}\r\n"
-                                self.printer_serial.write(printer_data.encode('utf-8'))
                             
                             # Remove the matched barcode from the master list
                             self.master.after(0, lambda i=i: self.remove_matched_master_barcode(i))
@@ -844,56 +847,6 @@ class Application:
         except ValueError:
             return False        
 
-    def validate_barcode(self, data):
-        """Validate barcode against master list in order"""
-        try:
-            data = data.strip()
-            master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
-            master_barcodes = [b.strip() for b in master_barcodes if b.strip()]
-            
-            if not master_barcodes:
-                self.master.after(0, lambda: self.show_alert_popup(False, "No master barcodes defined"))
-                return False
-                
-            # Check if barcode matches the first unmatched barcode in master list
-            for i, barcode in enumerate(master_barcodes, 1):
-                if barcode.strip() == data:
-                    # Check if this is the first unmatched barcode
-                    if not self.is_any_unmatched_barcode_before(i):
-                        # Success case
-                        if data.strip() != self.last_barcode:
-                            # Process successful scan
-                            command = '@ON01$' if int(self.switch_number.get()) == 1 else '@ON02$'
-                            if self.output_serial and self.output_serial.is_open:
-                                self.output_serial.write((command + "\r\n").encode('utf-8'))
-                                self.last_barcode = data.strip()
-                                time.sleep(2.0)
-                                self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
-                            
-                            # Send to printer when validation succeeds
-                            if self.printer_serial and self.printer_serial.is_open:
-                                printer_data = f"{data}\r\n"
-                                self.printer_serial.write(printer_data.encode('utf-8'))
-                            
-                            # Remove the matched barcode from the master list
-                            self.master.after(0, lambda i=i: self.remove_matched_master_barcode(i))
-                            
-                            # Show success popup
-                            self.master.after(0, lambda: self.show_alert_popup(True, 
-                                f"Barcode: {data}\nCommand: {command}"))
-                            return True
-                    else:
-                        self.master.after(0, lambda: self.show_alert_popup(False, 
-                            f"Incorrect order. Please scan previous barcodes first."))
-                        return False
-            
-            self.master.after(0, lambda: self.show_alert_popup(False, 
-                f"Barcode not found in master list:\n{data}"))
-            return False
-                
-        except Exception as e:
-            self.update_results(f"Validation error: {e}\n")
-            return False
 
     def validate_input_text(self, event):
         """Validate input text and update master list"""
@@ -1203,7 +1156,7 @@ class Application:
             self.update_results(f"Error moving master barcode: {e}\n")
 
     def delete_selected_master_barcode(self):
-        """Delete the selected barcode from the Master Barcodes window."""
+        """Delete the selected barcode from the Master Barcodes window and update the list."""
         try:
             # Temporarily enable the text widget
             self.master_text.config(state="normal")
@@ -1214,6 +1167,15 @@ class Application:
 
             # Delete the selected text
             self.master_text.delete(sel_start, sel_end)
+
+            # Rebuild the master list to remove empty rows and preserve order
+            lines = self.master_text.get("1.0", tk.END).splitlines()
+            cleaned_lines = [line.strip() for line in lines if line.strip()]
+
+            # Clear the text widget and reinsert cleaned lines
+            self.master_text.delete("1.0", tk.END)
+            for line in cleaned_lines:
+                self.master_text.insert(tk.END, f"{line}\n", 'unmatched')
 
             # Disable the text widget again
             self.master_text.config(state="disabled")
