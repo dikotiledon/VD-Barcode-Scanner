@@ -341,7 +341,7 @@ class Application:
         # Copyright text
         copyright_label = tk.Label(
             self.footer_frame,
-            text="© 2024 IT & System Innovation P",
+            text="© 2025 IT & System Innovation P",
             font=("Arial", 8),
             bg='lightgray',
             fg='black'
@@ -646,17 +646,24 @@ class Application:
                 # Check input ports
                 for i, serial_conn in enumerate(self.input_serials):
                     if serial_conn and serial_conn.is_open and serial_conn.in_waiting > 0:
-                        data = serial_conn.readline().decode('utf-8', errors='replace').strip()
+                        # Read data from the serial port
+                        raw_data = serial_conn.readline().decode('utf-8', errors='replace').strip()
+                        
+                        # Remove any prefix or suffix (customize this logic as needed)
+                        data = self.clean_data(raw_data)
+                        
                         if data:
                             if i == 0:  # Input 1 - Master Barcodes only
                                 self.update_results(f"Master Input Received: {data}\n")
                                 self.add_to_master_list(data)
                                 
-                                # Send data to the Printer COM port only once
+                                # Send data to the Printer COM port with STX and ETX
                                 if self.printer_serial and self.printer_serial.is_open:
                                     try:
-                                        self.printer_serial.write(f"{data}\r\n".encode('utf-8'))
-                                        self.update_results(f"Sent to Printer: {data}\n")
+                                        # Add STX and ETX to the data
+                                        formatted_data = f"\x02{data}\x03"
+                                        self.printer_serial.write(f"{formatted_data}\r\n".encode('utf-8'))
+                                        self.update_results(f"Sent to Printer: {formatted_data}\n")
                                     except Exception as e:
                                         self.update_results(f"Error sending to Printer: {e}\n")
                             elif i == 1:  # Input 2 - Validation against master list
@@ -669,6 +676,7 @@ class Application:
             except Exception as e:
                 self.update_results(f"Error in serial communication: {e}\n")
                 time.sleep(1)
+            
 
     def validate_barcode(self, data):
         """Validate barcode against master list in order"""
@@ -727,7 +735,23 @@ class Application:
             return False
 
     def add_to_master_list(self, data):
-        """Add barcode to master list from Input 1"""
+        """Add barcode to master list from Input 1 if not already present."""
+
+        # Check if the barcode is already in the master list
+        master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
+        if data.strip() in [b.strip() for b in master_barcodes if b.strip()]:
+            self.update_results(f"Barcode already exists in master list: {data}\n")
+            return  # Do not add duplicates
+
+        # Check if the barcode is uppercase
+        if not data.isupper():
+            self.update_results(f"Barcode is not uppercase and will not be added: {data}\n")
+            return
+
+        # If the length of data is greater than 14, truncate it to 14 characters
+        if len(data) > 14:
+            data = data[:14]
+
         self.master.after(0, lambda: self._safe_master_update(data))
 
     def _safe_master_update(self, data):
@@ -1258,6 +1282,26 @@ class Application:
             self.master_text.config(state="disabled")
         except tk.TclError as e:
             self.update_results(f"Error removing matched barcode: {e}\n")
+
+    def clean_data(self, raw_data):
+        """Remove STX, ETX, and any non-alphanumeric characters from the raw data."""
+        try:
+            # Check and remove STX (ASCII 0x02) at the start
+            if raw_data.startswith("\x02"):
+                raw_data = raw_data[1:]  # Remove the first character (STX)
+
+            # Check and remove ETX (ASCII 0x03) at the end
+            if raw_data.endswith("\x03"):
+                raw_data = raw_data[:-1]  # Remove the last character (ETX)
+
+            # Remove any non-alphanumeric characters
+            cleaned_data = ''.join(c for c in raw_data if c.isalnum())
+
+            # Return the cleaned data
+            return cleaned_data.strip()
+        except Exception as e:
+            self.update_results(f"Error cleaning data: {e}\n")
+            return raw_data
 
 def main():
     root = tk.Tk()
