@@ -646,26 +646,13 @@ class Application:
                 # Check input ports
                 for i, serial_conn in enumerate(self.input_serials):
                     if serial_conn and serial_conn.is_open and serial_conn.in_waiting > 0:
-                        # Read data from the serial port
-                        raw_data = serial_conn.readline().decode('utf-8', errors='replace').strip()
-                        
-                        # Remove any prefix or suffix (customize this logic as needed)
-                        data = self.clean_data(raw_data)
+                        # Read data from the serial port                        
+                        data = self.clean_data(serial_conn.readline().decode('utf-8', errors='replace'))
                         
                         if data:
                             if i == 0:  # Input 1 - Master Barcodes only
                                 self.update_results(f"Master Input Received: {data}\n")
                                 self.add_to_master_list(data)
-                                
-                                # Send data to the Printer COM port with STX and ETX
-                                if self.printer_serial and self.printer_serial.is_open:
-                                    try:
-                                        # Add STX and ETX to the data
-                                        formatted_data = f"\x02{data}\x03"
-                                        self.printer_serial.write(f"{formatted_data}\r\n".encode('utf-8'))
-                                        self.update_results(f"Sent to Printer: {formatted_data}\n")
-                                    except Exception as e:
-                                        self.update_results(f"Error sending to Printer: {e}\n")
                             elif i == 1:  # Input 2 - Validation against master list
                                 self.update_results(f"Input Received: {data}\n")
                                 is_valid = self.validate_barcode(data)
@@ -681,9 +668,8 @@ class Application:
     def validate_barcode(self, data):
         """Validate barcode against master list in order"""
         try:
-            data = data.strip()
             master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
-            master_barcodes = [b.strip() for b in master_barcodes if b.strip()]
+            master_barcodes = [b for b in master_barcodes if b]
             
             if not master_barcodes:
                 self.master.after(0, lambda: self.show_alert_popup(False, "No master barcodes defined"))
@@ -691,17 +677,17 @@ class Application:
                 
             # Check if barcode matches the first unmatched barcode in master list
             for i, barcode in enumerate(master_barcodes, 1):
-                if barcode.strip() == data:
+                if barcode == data:
                     # Check if this is the first unmatched barcode
                     if not self.is_any_unmatched_barcode_before(i):
                         # Success case
-                        if data.strip() != self.last_barcode:
+                        if data != self.last_barcode:
                             # Process successful scan
                             command = '@ON01$' if int(self.switch_number.get()) == 1 else '@ON02$'
                             if self.output_serial and self.output_serial.is_open:
                                 self.output_serial.write((command + "\r\n").encode('utf-8'))
-                                self.last_barcode = data.strip()
-                                time.sleep(2.0)
+                                self.last_barcode = data
+                                time.sleep(1.5)
                                 self.output_serial.write((command.replace('ON', 'OFF') + "\r\n").encode('utf-8'))
                             
                             # Remove the matched barcode from the master list
@@ -739,19 +725,17 @@ class Application:
 
         # Check if the barcode is already in the master list
         master_barcodes = self.master_text.get("1.0", tk.END).splitlines()
-        if data.strip() in [b.strip() for b in master_barcodes if b.strip()]:
+        if data in [b for b in master_barcodes if b]:
             self.update_results(f"Barcode already exists in master list: {data}\n")
             return  # Do not add duplicates
-
-        # Check if the barcode is uppercase
-        if not data.isupper():
-            self.update_results(f"Barcode is not uppercase and will not be added: {data}\n")
-            return
-
-        # If the length of data is greater than 14, truncate it to 14 characters
-        if len(data) > 14:
-            data = data[:14]
-
+        if self.printer_serial and self.printer_serial.is_open:
+            try:
+                # Add STX and ETX to the data
+                formatted_data = f"\x02{data}\x03"
+                self.printer_serial.write(f"{formatted_data}\r\n".encode('utf-8'))
+                self.update_results(f"Sent to Printer: {formatted_data}\n")
+            except Exception as e:
+                self.update_results(f"Error sending to Printer: {e}\n")
         self.master.after(0, lambda: self._safe_master_update(data))
 
     def _safe_master_update(self, data):
@@ -767,29 +751,6 @@ class Application:
             self.master_text.config(state="disabled")
         except tk.TclError:
             pass
-
-    def switch_to_usb_mode(self):
-        """Switch input interface to USB barcode scanner"""
-        self.interface_type = 'usb'
-        # Use a try/except block to safely handle keyboard hook
-        try:
-            keyboard.on_press(self.handle_usb_input)
-            self.update_results("Switched to USB barcode scanner mode\n")
-        except Exception as e:
-            self.update_results(f"Error setting up USB mode: {e}\n")
-    
-    def handle_usb_input(self, event):
-        """Handle input from USB barcode scanner"""
-        if not self.running:
-            return
-            
-        if event.name == 'enter':
-            # Process complete barcode
-            if self.barcode_buffer:
-                self.process_data(self.barcode_buffer)
-                self.barcode_buffer = ''
-        elif len(event.name) == 1:  # Single character
-            self.barcode_buffer += event.name
     
     def process_data(self, data):
         """Process received data regardless of interface"""
@@ -1285,6 +1246,7 @@ class Application:
 
     def clean_data(self, raw_data):
         """Remove STX, ETX, and any non-alphanumeric characters from the raw data."""
+        raw_data = raw_data.strip()
         try:
             # Check and remove STX (ASCII 0x02) at the start
             if raw_data.startswith("\x02"):
@@ -1293,12 +1255,26 @@ class Application:
             # Check and remove ETX (ASCII 0x03) at the end
             if raw_data.endswith("\x03"):
                 raw_data = raw_data[:-1]  # Remove the last character (ETX)
+            raw_data = raw_data.replace(':NG', '')
+            self.update_results(f"Raw Data: {raw_data}\n")
 
             # Remove any non-alphanumeric characters
             cleaned_data = ''.join(c for c in raw_data if c.isalnum())
-
+            cleaned_data.strip()
             # Return the cleaned data
-            return cleaned_data.strip()
+            if len(cleaned_data) > 14:
+                cleaned_data = cleaned_data[:14]
+            if len(cleaned_data) < 14:
+                self.update_results(f"Barcode Length Is invalid!: {cleaned_data}\n")
+                return
+                                
+            if not cleaned_data.isupper():
+                self.update_results(f"Barcode is not uppercase and will not be added: {cleaned_data}\n")
+                return
+            
+            
+            return cleaned_data
+        
         except Exception as e:
             self.update_results(f"Error cleaning data: {e}\n")
             return raw_data
